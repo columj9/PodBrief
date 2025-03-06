@@ -1,6 +1,13 @@
 import { useState } from "react";
-import { Form, Link } from "@remix-run/react";
-import type { MetaFunction } from "@remix-run/node";
+import { json } from "@remix-run/node";
+import { Form, Link, useActionData, useNavigation, useSearchParams } from "@remix-run/react";
+import { supabase } from "~/utils/supabase.server";
+import { createUserSession } from "~/utils/session.server";
+import type { MetaFunction, ActionFunctionArgs } from "@remix-run/node";
+
+type ActionData = 
+  | { url: string; error?: never }
+  | { error: string; url?: never };
 
 export const meta: MetaFunction = () => {
   return [
@@ -9,8 +16,91 @@ export const meta: MetaFunction = () => {
   ];
 };
 
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  
+  // Handle Google Sign In
+  if (formData.get("provider") === "google") {
+    try {
+      console.log("Initializing Google OAuth...");
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${process.env.PUBLIC_URL || 'http://localhost:3001'}/auth/callback`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+        },
+      });
+
+      if (error) {
+        console.error("Google OAuth initialization error:", error);
+        throw error;
+      }
+      console.log("OAuth URL generated:", data.url);
+      return json<ActionData>({ url: data.url });
+    } catch (error) {
+      return json<ActionData>(
+        { error: "Failed to initialize Google sign in" },
+        { status: 500 }
+      );
+    }
+  }
+
+  // Handle Email Sign In
+  const email = formData.get("email") as string;
+  const password = formData.get("password") as string;
+
+  if (!email || !password) {
+    return json<ActionData>(
+      { error: "Email and password are required" },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      return json<ActionData>(
+        { error: error.message },
+        { status: 400 }
+      );
+    }
+
+    if (data.session) {
+      return createUserSession(data.session.access_token, "/dashboard");
+    }
+
+    return json<ActionData>(
+      { error: "Something went wrong" },
+      { status: 500 }
+    );
+
+  } catch (error) {
+    return json<ActionData>(
+      { error: "An error occurred during login" },
+      { status: 500 }
+    );
+  }
+}
+
 export default function Login() {
   const [isEmailLogin, setIsEmailLogin] = useState(true);
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state === "submitting";
+  const [searchParams] = useSearchParams();
+  const error = searchParams.get("error");
+
+  // Handle OAuth URL redirect
+  if (actionData?.url) {
+    window.location.href = actionData.url;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4 sm:px-6 lg:px-8">
@@ -35,31 +125,38 @@ export default function Login() {
           </p>
         </div>
 
+        {(actionData?.error || error) && (
+          <div className="text-red-600 text-sm text-center">{actionData?.error || error}</div>
+        )}
+
         <div className="flex flex-col gap-4">
-          <button
-            type="button"
-            className="group relative w-full flex justify-center py-3 px-4 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600"
-            onClick={() => {/* OAuth logic will be implemented */}}
-          >
-            <span className="absolute left-0 inset-y-0 flex items-center pl-3">
-              <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/>
-              </svg>
-            </span>
-            Continue with Google
-          </button>
+          <Form method="post">
+            <input type="hidden" name="provider" value="google" />
+            <button
+              type="submit"
+              className="group relative w-full flex justify-center py-3 px-4 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600"
+            >
+              <span className="absolute left-0 inset-y-0 flex items-center pl-3">
+                <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/>
+                </svg>
+              </span>
+              Continue with Google
+            </button>
+          </Form>
 
           <button
             type="button"
             className="group relative w-full flex justify-center py-3 px-4 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600"
             onClick={() => {/* OAuth logic will be implemented */}}
+            disabled={true}
           >
             <span className="absolute left-0 inset-y-0 flex items-center pl-3">
               <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M7.88 12.04c0 1.28-1.04 2.32-2.32 2.32-1.28 0-2.32-1.04-2.32-2.32 0-1.28 1.04-2.32 2.32-2.32 1.28 0 2.32 1.04 2.32 2.32zm8.32 0c0 1.28-1.04 2.32-2.32 2.32-1.28 0-2.32-1.04-2.32-2.32 0-1.28 1.04-2.32 2.32-2.32 1.28 0 2.32 1.04 2.32 2.32zm8 0c0 1.28-1.04 2.32-2.32 2.32-1.28 0-2.32-1.04-2.32-2.32 0-1.28 1.04-2.32 2.32-2.32 1.28 0 2.32 1.04 2.32 2.32z"/>
               </svg>
             </span>
-            Continue with Microsoft
+            Continue with Microsoft (Coming Soon)
           </button>
 
           <div className="relative my-2">
@@ -129,9 +226,10 @@ export default function Login() {
             <div>
               <button
                 type="submit"
-                className="group relative w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600"
+                disabled={isSubmitting}
+                className="group relative w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600 disabled:opacity-50"
               >
-                Sign in
+                {isSubmitting ? "Signing in..." : "Sign in"}
               </button>
             </div>
           </Form>

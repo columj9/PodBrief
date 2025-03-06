@@ -8,5 +8,6 @@ export default {
   watchPaths: ["./tailwind.config.ts"],
   dev: {
     port: 3000
-  }
+  },
+  serverEnvironmentVariables: ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SESSION_SECRET"]
 };
